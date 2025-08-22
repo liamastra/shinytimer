@@ -13,10 +13,8 @@ const LS_KEY = "shiny_timer_v4";
 const LS_PROFILE = "shiny_timer_profile";
 
 function uid() {
-  // good enough for client ids; server keeps uuid too
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
-
 function fmtHMS(sec = 0) {
   const s = Math.max(0, Math.floor(sec));
   const h = Math.floor(s / 3600);
@@ -24,7 +22,6 @@ function fmtHMS(sec = 0) {
   const ss = s % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
 }
-
 function toSeconds(h, m) {
   const H = Number(h) || 0; const M = Number(m) || 0;
   return Math.max(0, H) * 3600 + Math.max(0, M) * 60;
@@ -41,12 +38,12 @@ const THEMES = [
 ];
 
 const DEFAULT_TIMERS = [
-  { id: uid(), name: "Working Hour", targetSec: 11*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "work", color: "from-slate-400/20 to-slate-600/20", sort_index: 0 },
-  { id: uid(), name: "Music",       targetSec:  0*3600+60, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "neutral", color: "from-rose-400/20 to-rose-600/20", sort_index: 1 },
-  { id: uid(), name: "Exercise",    targetSec:  1*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: false, goalFired: false, category: "neutral", color: "from-emerald-400/20 to-green-600/20", sort_index: 2 },
-  { id: uid(), name: "Learning",    targetSec:  2*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: false, goalFired: false, category: "work", color: "from-cyan-400/20 to-blue-600/20", sort_index: 3 },
-  { id: uid(), name: "Break Time",  targetSec:  28*60, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "break", color: "from-amber-400/20 to-orange-600/20", sort_index: 4 },
-  { id: uid(), name: "Sleeping",    targetSec:  6*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "neutral", color: "from-purple-400/20 to-violet-700/20", sort_index: 5 },
+  { id: uid(), name: "Working Hour", targetSec: 11*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "work", color: "from-slate-400/20 to-slate-600/20", sort_index: 0, deleted:false },
+  { id: uid(), name: "Music",       targetSec:  0*3600+60, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "neutral", color: "from-rose-400/20 to-rose-600/20", sort_index: 1, deleted:false },
+  { id: uid(), name: "Exercise",    targetSec:  1*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: false, goalFired: false, category: "neutral", color: "from-emerald-400/20 to-green-600/20", sort_index: 2, deleted:false },
+  { id: uid(), name: "Learning",    targetSec:  2*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: false, goalFired: false, category: "work", color: "from-cyan-400/20 to-blue-600/20", sort_index: 3, deleted:false },
+  { id: uid(), name: "Break Time",  targetSec:  28*60, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "break", color: "from-amber-400/20 to-orange-600/20", sort_index: 4, deleted:false },
+  { id: uid(), name: "Sleeping",    targetSec:  6*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "neutral", color: "from-purple-400/20 to-violet-700/20", sort_index: 5, deleted:false },
 ];
 
 // ---------------- App ----------------
@@ -89,6 +86,7 @@ export default function App() {
       const { data: rows, error } = await supabase
         .from("timers").select("*")
         .eq("user_id", user.id)
+        .or("deleted.is.null,deleted.eq.false")
         .order("sort_index", { ascending: true });
 
       if (!error) {
@@ -98,7 +96,8 @@ export default function App() {
           const mapped = rows.map(r => ({
             id:r.id, name:r.name, targetSec:r.target_sec, revisionSec:r.revision_sec,
             elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running,
-            goalOn:r.goal_on, goalFired:r.goal_fired, category:r.category, color:r.color, sort_index:r.sort_index??0
+            goalOn:r.goal_on, goalFired:r.goal_fired, category:r.category, color:r.color,
+            sort_index:r.sort_index??0, deleted: !!r.deleted
           }));
           mapped.sort((a,b)=>(a.sort_index??0)-(b.sort_index??0));
           setTimers(mapped);
@@ -110,7 +109,7 @@ export default function App() {
     })();
   }, [user]);
 
-  // ---------- Realtime: timers ----------
+  // ---------- Realtime: timers (handle UPDATE/INSERT/DELETE + soft-delete) ----------
   useEffect(() => {
     if (!supabase || !user) return;
     const channel = supabase
@@ -122,7 +121,11 @@ export default function App() {
           return;
         }
         const r = payload.new; if (!r) return;
-        const mapped = { id:r.id, name:r.name, category:r.category, targetSec:r.target_sec, revisionSec:r.revision_sec, elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running, goalOn:r.goal_on, goalFired:r.goal_fired, color:r.color, sort_index:r.sort_index??0 };
+        if (r.deleted) { // soft-deleted on server
+          setTimers(prev => prev.filter(t => t.id !== r.id));
+          return;
+        }
+        const mapped = { id:r.id, name:r.name, category:r.category, targetSec:r.target_sec, revisionSec:r.revision_sec, elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running, goalOn:r.goal_on, goalFired:r.goal_fired, color:r.color, sort_index:r.sort_index??0, deleted: !!r.deleted };
         setTimers(prev => {
           const i = prev.findIndex(t => t.id === r.id);
           const next = [...prev];
@@ -148,7 +151,28 @@ export default function App() {
     return () => supabase.removeChannel(ch);
   }, [user]);
 
-  // ---------- Debounced save timers ----------
+  // ---------- Stable ticking (no jumping) ----------
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now()/1000));
+  useEffect(() => {
+    const id = setInterval(() => setNowSec(Math.floor(Date.now()/1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Check for goal crossing once per tick
+  useEffect(() => {
+    setTimers(prev => prev.map(t => {
+      if (!t.goalOn || t.goalFired || !t.targetSec) return t;
+      const runExtra = (t.running && t.startTs!=null) ? (nowSec - t.startTs) : 0;
+      const net = Math.max(0, (t.elapsedSec + runExtra) - (t.revisionSec||0));
+      if (net >= t.targetSec) {
+        setCelebration({ name: t.name, target: t.targetSec });
+        return { ...t, goalFired: true };
+      }
+      return t;
+    }));
+  }, [nowSec]);
+
+  // ---------- Save timers (debounced) ----------
   const saveDebounce = useRef();
   useEffect(() => {
     if (!supabase || !user) return;
@@ -165,28 +189,9 @@ export default function App() {
 
   async function upsertAllToCloud(userId, list) {
     if (!supabase) return;
-    const rows = list.map((t, idx) => ({ id:t.id, user_id:userId, name:t.name, target_sec:Math.floor(t.targetSec||0), revision_sec:Math.floor(t.revisionSec||0), elapsed_sec:Math.floor(t.elapsedSec||0), start_ts:t.startTs?Math.floor(t.startTs):null, running:!!t.running, goal_on:!!t.goalOn, goal_fired:!!t.goalFired, category:t.category, color:t.color, sort_index: idx, updated_at:new Date().toISOString() }));
+    const rows = list.map((t, idx) => ({ id:t.id, user_id:userId, name:t.name, target_sec:Math.floor(t.targetSec||0), revision_sec:Math.floor(t.revisionSec||0), elapsed_sec:Math.floor(t.elapsedSec||0), start_ts:t.startTs?Math.floor(t.startTs):null, running:!!t.running, goal_on:!!t.goalOn, goal_fired:!!t.goalFired, category:t.category, color:t.color, sort_index: idx, deleted: !!t.deleted, updated_at:new Date().toISOString() }));
     const { error } = await supabase.from("timers").upsert(rows, { onConflict:"id" }); if (error) console.error(error);
   }
-
-  // ---------- Timer loop ----------
-  useEffect(() => {
-    const id = setInterval(() => {
-      setTimers(prev => prev.map(t => {
-        if (!t.running || t.startTs == null) return t;
-        const now = Math.floor(Date.now()/1000);
-        const elapsed = t.elapsedSec + (now - t.startTs);
-        const net = Math.max(0, elapsed - (t.revisionSec||0));
-        // fire celebration once
-        if (t.goalOn && !t.goalFired && t.targetSec>0 && net >= t.targetSec) {
-          setCelebration({ name: t.name, target: t.targetSec });
-          return { ...t, goalFired: true, elapsedSec: elapsed };
-        }
-        return { ...t, elapsedSec: elapsed };
-      }));
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
 
   // ---------- Actions ----------
   function startTimer(id) {
@@ -204,14 +209,20 @@ export default function App() {
     setTimers(prev => prev.map(t => t.id===id ? { ...t, running:false, startTs:null, elapsedSec:0, revisionSec:0, goalFired:false } : t));
   }
   async function removeTimer(id) {
+    // local remove (instant)
     setTimers(prev => prev.filter(t => t.id !== id));
     setEditTimer(null);
     if (supabase && user) {
-      await supabase.from('timers').delete().eq('user_id', user.id).eq('id', id);
+      // Try hard delete first
+      const del = await supabase.from('timers').delete().eq('user_id', user.id).eq('id', id);
+      if (del.error) {
+        // Fallback to soft delete (works with UPDATE policy)
+        await supabase.from('timers').update({ deleted:true, updated_at: new Date().toISOString() }).eq('user_id', user.id).eq('id', id);
+      }
     }
   }
   function addTimer() {
-    const n = { id: uid(), name:"New Timer", targetSec:0, revisionSec:0, elapsedSec:0, startTs:null, running:false, goalOn:false, goalFired:false, category:"neutral", color:"from-slate-400/20 to-slate-700/20", sort_index: timers.length };
+    const n = { id: uid(), name:"New Timer", targetSec:0, revisionSec:0, elapsedSec:0, startTs:null, running:false, goalOn:false, goalFired:false, category:"neutral", color:"from-slate-400/20 to-slate-700/20", sort_index: timers.length, deleted:false };
     setTimers(prev => [...prev, n]);
     setEditTimer(n);
   }
@@ -227,9 +238,8 @@ export default function App() {
   function resetDay() {
     setTimers(prev => prev.map(t => ({ ...t, running:false, startTs:null, elapsedSec:0, revisionSec:0, goalFired:false })));
   }
-
   function exportCSV() {
-    const rows = [["Name","Seconds","Time"], ...timers.map(t => { const net = Math.max(0, (t.elapsedSec||0) - (t.revisionSec||0)); return [t.name, String(net), fmtHMS(net)]; })];
+    const rows = [["Name","Seconds","Time"], ...timers.map(t => { const runExtra = (t.running && t.startTs!=null) ? (nowSec - t.startTs) : 0; const net = Math.max(0, (t.elapsedSec + runExtra) - (t.revisionSec||0)); return [t.name, String(net), fmtHMS(net)]; })];
     const csv = rows.map(r => r.map(x => `"${String(x).replaceAll('"','""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type:"text/csv" });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `timers-${new Date().toISOString().slice(0,10)}.csv`; a.click();
@@ -252,13 +262,23 @@ export default function App() {
     });
   }
 
-  // totals
-  const totalTracked = useMemo(() => fmtHMS(timers.reduce((a,t)=> a + Math.max(0,(t.elapsedSec||0)-(t.revisionSec||0)),0)), [timers]);
+  // totals and live net seconds
+  const totals = useMemo(() => {
+    let total = 0;
+    const nets = new Map();
+    for (const t of timers) {
+      const runExtra = (t.running && t.startTs!=null) ? (nowSec - t.startTs) : 0;
+      const net = Math.max(0, (t.elapsedSec + runExtra) - (t.revisionSec||0));
+      nets.set(t.id, net);
+      total += net;
+    }
+    return { total: fmtHMS(total), nets };
+  }, [timers, nowSec]);
 
   return (
     <div className="min-h-screen text-white selection:bg-cyan-500/30">
-      {/* moving background highlight */}
-      <div className="fixed inset-0 -z-10 bg-[radial-gradient(1200px_600px_at_70%_-10%,rgba(255,255,255,0.09),transparent_60%)]" />
+      {/* subtle static background (no moving gradient) */}
+      <div className="fixed inset-0 -z-10 bg-[radial-gradient(1200px_600px_at_70%_-10%,rgba(255,255,255,0.08),transparent_60%)]" />
 
       <NavBar
         profile={profile}
@@ -266,28 +286,25 @@ export default function App() {
         addTimer={addTimer}
         resetDay={resetDay}
         exportCSV={exportCSV}
-        totalTracked={totalTracked}
+        totalTracked={totals.total}
         user={user}
       />
 
       {/* timers list */}
       <div className="max-w-5xl mx-auto px-4 pb-24">
         <div className="flex flex-col gap-6">
-          {timers.map(t => {
-            const netSeconds = Math.max(0, (t.elapsedSec||0) - (t.revisionSec||0));
-            return (
-              <TimerCard key={t.id} t={t}
-                onDragStart={onDragStart}
-                onDragOverItem={(e)=>onDragOverList(e, t.id)}
-                onClick={()=>setEditTimer(t)}
-                start={()=>startTimer(t.id)}
-                pause={()=>pauseTimer(t.id)}
-                reset={()=>resetTimer(t.id)}
-                netSeconds={netSeconds}
-                adjust={(delta)=>adjustTimer(t.id, delta)}
-              />
-            );
-          })}
+          {timers.map(t => (
+            <TimerCard key={t.id} t={t}
+              onDragStart={onDragStart}
+              onDragOverItem={(e)=>onDragOverList(e, t.id)}
+              onClick={()=>setEditTimer(t)}
+              start={()=>startTimer(t.id)}
+              pause={()=>pauseTimer(t.id)}
+              reset={()=>resetTimer(t.id)}
+              netSeconds={totals.nets.get(t.id) || 0}
+              adjust={(delta)=>adjustTimer(t.id, delta)}
+            />
+          ))}
         </div>
       </div>
 
@@ -329,7 +346,7 @@ function NavBar({ profile, onOpenProfile, addTimer, resetDay, exportCSV, totalTr
         <button onClick={onOpenProfile} className="flex items-center gap-3 group">
           <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/15 grid place-items-center text-xl">{profile.emoji || "🌟"}</div>
           <div className="text-left">
-            <div className="font-semibold">{profile.name || "Your Name"}</div>
+            <div className="font-semibold text-lg sm:text-xl">{profile.name || "Your Name"}</div>
             <div className="text-xs text-white/70">Time Tracker</div>
           </div>
         </button>
@@ -369,8 +386,8 @@ function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, rese
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-white/15 border border-white/20 grid place-items-center text-white/90 text-lg">⏱️</div>
           <div>
-            <div className="text-white font-semibold text-lg leading-tight drop-shadow-sm">{t.name}</div>
-            <div className="text-white/80 text-sm">Target: {t.targetSec > 0 ? fmtHMS(t.targetSec) : "–"} {t.goalOn ? "• Goal ON" : "• Goal OFF"}</div>
+            <div className="text-white font-semibold text-xl sm:text-2xl leading-tight drop-shadow-sm">{t.name}</div>
+            <div className="text-white/75 text-xs">Target: {t.targetSec > 0 ? fmtHMS(t.targetSec) : "–"} {t.goalOn ? "• Goal ON" : "• Goal OFF"}</div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -380,7 +397,7 @@ function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, rese
         </div>
       </div>
 
-      {/* Quick adjust */}
+      {/* Quick adjust (stop clicks so editor doesn't open) */}
       <QuickAdjust onAdd={(s)=>adjust(+s)} onSub={(s)=>adjust(-s)} />
 
       {/* Shine */}
@@ -395,13 +412,13 @@ function QuickAdjust({ onAdd, onSub }) {
   const [h, setH] = useState(0); const [m, setM] = useState(0);
   function fire(delta) { const s = toSeconds(h, m); if (s>0) { delta>0? onAdd(s): onSub(s); setH(0); setM(0); } }
   return (
-    <div className="mt-3 flex items-center gap-2 text-sm text-white/80">
+    <div className="mt-3 flex items-center gap-2 text-sm text-white/80" onMouseDown={(e)=>e.stopPropagation()} onClick={(e)=>e.stopPropagation()}>
       <span className="opacity-80">Adjust:</span>
       <input type="number" className="w-16 px-2 py-1 rounded-lg bg-white/10 border border-white/10" value={h} onChange={e=>setH(e.target.value)} min={0} />
       <span>:</span>
       <input type="number" className="w-16 px-2 py-1 rounded-lg bg-white/10 border border-white/10" value={m} onChange={e=>setM(e.target.value)} min={0} />
-      <button onClick={(e)=>{e.stopPropagation(); fire(+1);}} className="px-3 py-1 rounded-lg bg-green-600/80 hover:bg-green-500">Add</button>
-      <button onClick={(e)=>{e.stopPropagation(); fire(-1);}} className="px-3 py-1 rounded-lg bg-rose-600/80 hover:bg-rose-500">Subtract</button>
+      <button onClick={(e)=>{e.stopPropagation(); fire(+1);}} className="px-3 py-1 rounded-lg bg-green-600/80 hover:bg-green-500 active:scale-95">Add</button>
+      <button onClick={(e)=>{e.stopPropagation(); fire(-1);}} className="px-3 py-1 rounded-lg bg-rose-600/80 hover:bg-rose-500 active:scale-95">Subtract</button>
     </div>
   );
 }
@@ -480,6 +497,9 @@ function TimerEditor({ t, onClose, onDelete, onName, onTarget, onGoal, onCategor
 function ProfileEditor({ profile, onSave }) {
   const [name, setName] = useState(profile.name || "Your Name");
   const [emoji, setEmoji] = useState(profile.emoji || "🌟");
+
+  const EMOJIS = ["🌟","😀","😎","🧠","🔥","💪","📚","🎵","🎯","🏃","☕","💼","🛠️","💡","🌈","🪴","🎨","🧘","🕹️","🕒"];
+
   return (
     <div className="w-[min(560px,95vw)]">
       <h2 className="text-2xl font-semibold mb-4">Profile</h2>
@@ -489,8 +509,12 @@ function ProfileEditor({ profile, onSave }) {
           <input value={name} onChange={e=>setName(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/10" />
         </div>
         <div>
-          <label className="block text-sm mb-1">Emoji</label>
-          <input value={emoji} onChange={e=>setEmoji(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/10" />
+          <label className="block text-sm mb-2">Choose an emoji avatar</label>
+          <div className="grid grid-cols-10 gap-2">
+            {EMOJIS.map(ej => (
+              <button key={ej} onClick={()=>setEmoji(ej)} className={`h-10 rounded-xl border grid place-items-center text-xl ${emoji===ej? 'bg-white/20 border-white/50' : 'bg-white/10 border-white/15'}`}>{ej}</button>
+            ))}
+          </div>
         </div>
       </div>
       <div className="mt-6 flex items-center gap-2 justify-between">
@@ -576,10 +600,6 @@ function StyleTags() {
       @import url('https://fonts.googleapis.com/css2?family=Monomakh:wght@600&display=swap');
       html,body,#root{height:100%}
       body{background:#0b1220}
-      @keyframes gradientMove { 0%{background-position:0% 0%} 50%{background-position:100% 100%} 100%{background-position:0% 0%} }
-      .animate-gradient { background-size:200% 200%; animation: gradientMove 18s ease infinite; }
-      @keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
-      .animate-shimmer { background-size:200% 100%; animation: shimmer 14s linear infinite; }
       @keyframes cardShine { 0%{ transform: translateX(-120%) rotate(12deg);} 100%{ transform: translateX(120%) rotate(12deg);} }
       .animate-card-shine { animation: cardShine 1.1s ease forwards; }
       .time-mono { font-family: "Monomakh", sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; font-size: 2rem; }
@@ -588,14 +608,8 @@ function StyleTags() {
       @keyframes confettiFall { 0%{ transform: translateY(-10vh) rotate(var(--rotate)); opacity:1 } 100%{ transform: translateY(110vh) rotate(calc(var(--rotate) + 360deg)); opacity:.9 } }
       @keyframes confettiSpin { from { filter: brightness(1) } to { filter: brightness(1.2) } }
       .glow-text { filter: drop-shadow(0 0 14px rgba(255,255,255,0.25)) drop-shadow(0 0 34px rgba(255,255,255,0.15)); }
-      @keyframes glow { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
-      .animate-glow { animation: glow 8s ease infinite; }
       /* Keep dynamic gradient classes alive for Tailwind v4 tree-shake */
       .safelist { display:none }
-      .safelist:where(.x){
-        background-image: linear-gradient(to bottom right, var(--tw-gradient-stops));
-      }
-      /* classes to preserve */
       .keep-1{ background-image: linear-gradient(to bottom right, rgb(96 165 250 / 0.25), rgb(79 70 229 / 0.25)); }
       .keep-2{ background-image: linear-gradient(to bottom right, rgb(110 231 183 / 0.25), rgb(22 163 74 / 0.25)); }
       .keep-3{ background-image: linear-gradient(to bottom right, rgb(232 121 249 / 0.25), rgb(147 51 234 / 0.25)); }
