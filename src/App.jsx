@@ -1,91 +1,106 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-/* -------------------------------------------------
-   Supabase client (works in Canvas and locally)
-   If env vars are missing (Canvas), supabase = null → local-only
-----------------------------------------------------*/
-const supabaseUrl = import.meta.env?.VITE_SUPABASE_URL;
-const supabaseAnon = import.meta.env?.VITE_SUPABASE_ANON;
-const supabase = (supabaseUrl && supabaseAnon) ? createClient(supabaseUrl, supabaseAnon) : null;
+// ---------------- Supabase ----------------
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnon = import.meta.env.VITE_SUPABASE_ANON;
+const supabase = (supabaseUrl && supabaseAnon)
+  ? createClient(supabaseUrl, supabaseAnon)
+  : null;
 
-/* ---------------- Helpers ---------------- */
-const uid = () => Math.random().toString(36).slice(2, 9);
-const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-const pad = (n) => String(n).padStart(2, "0");
-const fmtHMS = (sec) => { sec = Math.max(0, Math.floor(sec)); const h = Math.floor(sec/3600); const m = Math.floor((sec%3600)/60); const s = sec%60; return `${pad(h)}:${pad(m)}:${pad(s)}` };
+// ---------------- Utils ----------------
+const LS_KEY = "shiny_timer_v4";
+const LS_PROFILE = "shiny_timer_profile";
 
-/* ---------------- Themes (glass pastel + transparent) ---------------- */
-const THEME_SWATCHES = [
-  { id: "cb", label: "Cyan→Blue",       val: "from-cyan-500/30 to-blue-500/30" },
-  { id: "et", label: "Emerald→Teal",    val: "from-emerald-500/30 to-teal-500/30" },
-  { id: "vf", label: "Violet→Fuchsia",  val: "from-violet-500/30 to-fuchsia-500/30" },
-  { id: "ao", label: "Amber→Orange",    val: "from-amber-500/30 to-orange-500/30" },
-  { id: "lg", label: "Lime→Green",      val: "from-lime-500/30 to-green-500/30" },
-  { id: "si", label: "Sky→Indigo",      val: "from-sky-500/30 to-indigo-500/30" },
-  { id: "rr", label: "Rose→Red",        val: "from-rose-500/30 to-red-500/30" },
-  { id: "tr", label: "Transparent",     val: "from-white/0 to-white/0" },
+function uid() {
+  // good enough for client ids; server keeps uuid too
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function fmtHMS(sec = 0) {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
+function toSeconds(h, m) {
+  const H = Number(h) || 0; const M = Number(m) || 0;
+  return Math.max(0, H) * 3600 + Math.max(0, M) * 60;
+}
+
+// pastel glass themes (Tailwind v4 classes kept in StyleTags safelist)
+const THEMES = [
+  { id: "glass-none", label: "Transparent", cls: "from-transparent to-transparent/0" },
+  { id: "glass-blue", label: "Blue", cls: "from-blue-400/25 to-indigo-500/25" },
+  { id: "glass-green", label: "Green", cls: "from-emerald-400/25 to-green-600/25" },
+  { id: "glass-purple", label: "Purple", cls: "from-fuchsia-400/25 to-purple-600/25" },
+  { id: "glass-gold", label: "Gold", cls: "from-amber-400/25 to-rose-500/25" },
+  { id: "glass-red", label: "Red", cls: "from-rose-500/25 to-red-600/25" },
 ];
 
-/* ---------------- Defaults ---------------- */
 const DEFAULT_TIMERS = [
-  { id: uid(), name: "Working Hour", targetSec: 11*3600, revisionSec: 0, running:false, startTs:null, elapsedSec:0, goalOn:true, goalFired:false, category:"work", color: THEME_SWATCHES[0].val },
+  { id: uid(), name: "Working Hour", targetSec: 11*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "work", color: "from-slate-400/20 to-slate-600/20", sort_index: 0 },
+  { id: uid(), name: "Music",       targetSec:  0*3600+60, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "neutral", color: "from-rose-400/20 to-rose-600/20", sort_index: 1 },
+  { id: uid(), name: "Exercise",    targetSec:  1*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: false, goalFired: false, category: "neutral", color: "from-emerald-400/20 to-green-600/20", sort_index: 2 },
+  { id: uid(), name: "Learning",    targetSec:  2*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: false, goalFired: false, category: "work", color: "from-cyan-400/20 to-blue-600/20", sort_index: 3 },
+  { id: uid(), name: "Break Time",  targetSec:  28*60, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "break", color: "from-amber-400/20 to-orange-600/20", sort_index: 4 },
+  { id: uid(), name: "Sleeping",    targetSec:  6*3600, revisionSec: 0, elapsedSec: 0, startTs: null, running: false, goalOn: true, goalFired: false, category: "neutral", color: "from-purple-400/20 to-violet-700/20", sort_index: 5 },
 ];
 
-/* ---------------- Root App ---------------- */
+// ---------------- App ----------------
 export default function App() {
-  // profile + timers (local first)
+  const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(() => {
-    const saved = localStorage.getItem("tt_profile");
-    return saved ? JSON.parse(saved) : { name: "Your Name", photo: null, emoji: "🌟" };
+    const s = localStorage.getItem(LS_PROFILE);
+    return s ? JSON.parse(s) : { name: "Your Name", emoji: "🌟", photo: null };
   });
   const [timers, setTimers] = useState(() => {
-    const saved = localStorage.getItem("tt_timers");
-    const arr = saved ? JSON.parse(saved) : DEFAULT_TIMERS;
-    return arr.map(t => ({ goalFired:false, revisionSec: t.revisionSec ?? 0, ...t }));
+    const s = localStorage.getItem(LS_KEY);
+    return s ? JSON.parse(s) : DEFAULT_TIMERS;
   });
 
-  // ui
-  const [dragId, setDragId] = useState(null);
-  const [editTimer, setEditTimer] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
-  const [celebration, setCelebration] = useState({ active: false, message: "" });
+  const [editTimer, setEditTimer] = useState(null);
+  const [celebration, setCelebration] = useState(null); // {name,target}
 
-  // auth
-  const [user, setUser] = useState(null);
-  const [authOpen, setAuthOpen] = useState(false);
-  const saveDebounce = useRef(null);
+  // local persistence
+  useEffect(()=>{ localStorage.setItem(LS_KEY, JSON.stringify(timers)); }, [timers]);
+  useEffect(()=>{ localStorage.setItem(LS_PROFILE, JSON.stringify(profile)); }, [profile]);
 
-  // confetti
-  const confettiLayer = useRef(null);
-  const confettiIntervalRef = useRef(null);
-
-  /* ---------- Persist locally ---------- */
-  useEffect(() => { localStorage.setItem("tt_timers", JSON.stringify(timers)); }, [timers]);
-  useEffect(() => { localStorage.setItem("tt_profile", JSON.stringify(profile)); }, [profile]);
-
-  /* ---------- Auth session ---------- */
+  // Supabase auth
   useEffect(() => {
     if (!supabase) return;
-    let ignore = false;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!ignore) setUser(data.session?.user ?? null);
+      const { data } = await supabase.auth.getUser();
+      setUser(data?.user ?? null);
     })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => { setUser(session?.user ?? null); });
-    return () => { ignore = true; sub?.subscription?.unsubscribe?.(); };
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => sub?.subscription.unsubscribe();
   }, []);
 
-  /* ---------- Load from cloud on sign-in ---------- */
+  // ---------- Load from cloud on sign-in ----------
   useEffect(() => {
     if (!supabase || !user) return;
     (async () => {
-      const { data: rows, error } = await supabase.from("timers").select("*").eq("user_id", user.id);
+      const { data: rows, error } = await supabase
+        .from("timers").select("*")
+        .eq("user_id", user.id)
+        .order("sort_index", { ascending: true });
+
       if (!error) {
         if (!rows || rows.length === 0) {
           await upsertAllToCloud(user.id, timers);
         } else {
-          const mapped = rows.map(r => ({ id:r.id, name:r.name, targetSec:r.target_sec, revisionSec:r.revision_sec, elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running, goalOn:r.goal_on, goalFired:r.goal_fired, category:r.category, color:r.color }));
+          const mapped = rows.map(r => ({
+            id:r.id, name:r.name, targetSec:r.target_sec, revisionSec:r.revision_sec,
+            elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running,
+            goalOn:r.goal_on, goalFired:r.goal_fired, category:r.category, color:r.color, sort_index:r.sort_index??0
+          }));
+          mapped.sort((a,b)=>(a.sort_index??0)-(b.sort_index??0));
           setTimers(mapped);
         }
       }
@@ -95,278 +110,241 @@ export default function App() {
     })();
   }, [user]);
 
-  // Real-time subscribe to your own timers
+  // ---------- Realtime: timers ----------
   useEffect(() => {
     if (!supabase || !user) return;
-
     const channel = supabase
       .channel('timers-rt')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'timers', filter: `user_id=eq.${user.id}` },
-        (payload) => {
-          // Merge the incoming row into state
-          const row = payload.new || payload.old;
-          setTimers((prev) => {
-            const i = prev.findIndex(t => t.id === row.id);
-            const next = [...prev];
-            const mapped = {
-              id: row.id,
-              name: row.name,
-              category: row.category,
-              targetSec: row.target_sec,
-              revisionSec: row.revision_sec,
-              elapsedSec: row.elapsed_sec,
-              startTs: row.start_ts ?? null,
-              running: row.running,
-              goalOn: row.goal_on,
-              goalFired: row.goal_fired,
-              color: row.color,
-            };
-            if (i === -1) next.unshift(mapped); else next[i] = mapped;
-            return next;
-          });
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'timers', filter: `user_id=eq.${user.id}` }, (payload) => {
+        if (payload.eventType === 'DELETE') {
+          const id = payload.old?.id; if (!id) return;
+          setTimers(prev => prev.filter(t => t.id !== id));
+          return;
         }
-      )
+        const r = payload.new; if (!r) return;
+        const mapped = { id:r.id, name:r.name, category:r.category, targetSec:r.target_sec, revisionSec:r.revision_sec, elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running, goalOn:r.goal_on, goalFired:r.goal_fired, color:r.color, sort_index:r.sort_index??0 };
+        setTimers(prev => {
+          const i = prev.findIndex(t => t.id === r.id);
+          const next = [...prev];
+          if (i === -1) next.push(mapped); else next[i] = mapped;
+          next.sort((a,b)=>(a.sort_index??0)-(b.sort_index??0));
+          return next;
+        });
+      })
       .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    return () => supabase.removeChannel(channel);
   }, [user]);
 
+  // ---------- Realtime: profile ----------
+  useEffect(() => {
+    if (!supabase || !user) return;
+    const ch = supabase
+      .channel('profiles-rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `user_id=eq.${user.id}` }, (payload) => {
+        const row = payload.new || payload.old; if (!row) return;
+        setProfile({ name: row.name ?? "Your Name", emoji: row.emoji ?? "🌟", photo: row.photo ?? null });
+      })
+      .subscribe();
+    return () => supabase.removeChannel(ch);
+  }, [user]);
 
-  /* ---------- Save to cloud on timers/profile change (debounced) ---------- */
+  // ---------- Debounced save timers ----------
+  const saveDebounce = useRef();
   useEffect(() => {
     if (!supabase || !user) return;
     if (saveDebounce.current) clearTimeout(saveDebounce.current);
     saveDebounce.current = setTimeout(() => { upsertAllToCloud(user.id, timers); }, 400);
     return () => clearTimeout(saveDebounce.current);
   }, [timers, user]);
+
+  // ---------- Save profile ----------
   useEffect(() => {
     if (!supabase || !user) return;
-    (async () => {
-      await supabase.from("profiles").upsert({ user_id:user.id, name: profile.name, emoji: profile.emoji, photo: profile.photo, updated_at:new Date().toISOString() });
-    })();
+    (async () => { await supabase.from("profiles").upsert({ user_id:user.id, name: profile.name, emoji: profile.emoji, photo: profile.photo, updated_at:new Date().toISOString() }); })();
   }, [profile, user]);
 
   async function upsertAllToCloud(userId, list) {
     if (!supabase) return;
-    const rows = list.map(t => ({ id:t.id, user_id:userId, name:t.name, target_sec:Math.floor(t.targetSec||0), revision_sec:Math.floor(t.revisionSec||0), elapsed_sec:Math.floor(t.elapsedSec||0), start_ts:t.startTs?Math.floor(t.startTs):null, running:!!t.running, goal_on:!!t.goalOn, goal_fired:!!t.goalFired, category:t.category, color:t.color, updated_at:new Date().toISOString() }));
+    const rows = list.map((t, idx) => ({ id:t.id, user_id:userId, name:t.name, target_sec:Math.floor(t.targetSec||0), revision_sec:Math.floor(t.revisionSec||0), elapsed_sec:Math.floor(t.elapsedSec||0), start_ts:t.startTs?Math.floor(t.startTs):null, running:!!t.running, goal_on:!!t.goalOn, goal_fired:!!t.goalFired, category:t.category, color:t.color, sort_index: idx, updated_at:new Date().toISOString() }));
     const { error } = await supabase.from("timers").upsert(rows, { onConflict:"id" }); if (error) console.error(error);
   }
 
-  /* ---------- Timer math & logic ---------- */
-  function timerNetSeconds(t) {
-    const runningNow = t.running && t.startTs ? (Date.now() - t.startTs) / 1000 : 0;
-    return Math.max(0, (t.elapsedSec + runningNow) - (t.revisionSec || 0));
-  }
-
-  // goal checker
+  // ---------- Timer loop ----------
   useEffect(() => {
     const id = setInterval(() => {
       setTimers(prev => prev.map(t => {
-        const net = timerNetSeconds(t);
-        if (t.goalOn && !t.goalFired && t.targetSec > 0 && net >= t.targetSec) {
-          startCelebration(`Congratulations! You reached your goal of ${fmtHMS(t.targetSec)} for "${t.name}"`);
-          return { ...t, goalFired: true };
+        if (!t.running || t.startTs == null) return t;
+        const now = Math.floor(Date.now()/1000);
+        const elapsed = t.elapsedSec + (now - t.startTs);
+        const net = Math.max(0, elapsed - (t.revisionSec||0));
+        // fire celebration once
+        if (t.goalOn && !t.goalFired && t.targetSec>0 && net >= t.targetSec) {
+          setCelebration({ name: t.name, target: t.targetSec });
+          return { ...t, goalFired: true, elapsedSec: elapsed };
         }
-        return t;
+        return { ...t, elapsedSec: elapsed };
       }));
     }, 1000);
     return () => clearInterval(id);
   }, []);
 
+  // ---------- Actions ----------
   function startTimer(id) {
-    setTimers(prev => prev.map(t => {
-      if (t.id === id) {
-        if (t.running) return t;
-        return { ...t, running: true, startTs: Date.now() };
-      }
-      if (t.running) {
-        const add = t.startTs ? (Date.now() - t.startTs) / 1000 : 0;
-        return { ...t, running: false, startTs: null, elapsedSec: Math.max(0, t.elapsedSec + add) };
-      }
-      return t;
-    }));
+    setTimers(prev => prev.map(t => t.id===id ? (t.running? t : { ...t, running:true, startTs: Math.floor(Date.now()/1000) }) : t));
   }
   function pauseTimer(id) {
     setTimers(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      if (!t.running) return t;
-      const add = t.startTs ? (Date.now() - t.startTs) / 1000 : 0;
-      return { ...t, running: false, startTs: null, elapsedSec: Math.max(0, t.elapsedSec + add) };
+      if (t.id !== id || !t.running) return t;
+      const now = Math.floor(Date.now()/1000);
+      const extra = now - (t.startTs||now);
+      return { ...t, running:false, startTs:null, elapsedSec: t.elapsedSec + extra };
     }));
   }
   function resetTimer(id) {
-    setTimers(prev => prev.map(t => t.id === id ? { ...t, running:false, startTs:null, elapsedSec:0, revisionSec:0, goalFired:false } : t));
+    setTimers(prev => prev.map(t => t.id===id ? { ...t, running:false, startTs:null, elapsedSec:0, revisionSec:0, goalFired:false } : t));
   }
-  function resetAll() {
+  async function removeTimer(id) {
+    setTimers(prev => prev.filter(t => t.id !== id));
+    setEditTimer(null);
+    if (supabase && user) {
+      await supabase.from('timers').delete().eq('user_id', user.id).eq('id', id);
+    }
+  }
+  function addTimer() {
+    const n = { id: uid(), name:"New Timer", targetSec:0, revisionSec:0, elapsedSec:0, startTs:null, running:false, goalOn:false, goalFired:false, category:"neutral", color:"from-slate-400/20 to-slate-700/20", sort_index: timers.length };
+    setTimers(prev => [...prev, n]);
+    setEditTimer(n);
+  }
+  function adjustTimer(id, deltaSec) {
+    setTimers(prev => prev.map(t => t.id===id ? { ...t, revisionSec: Math.max(0, (t.revisionSec||0) - deltaSec) } : t));
+  }
+  function setTheme(id, cls) { setTimers(prev => prev.map(t => t.id===id?{...t, color:cls}:t)); }
+  function setTarget(id, sec) { setTimers(prev => prev.map(t => t.id===id?{...t, targetSec:sec}:t)); }
+  function setName(id, name) { setTimers(prev => prev.map(t => t.id===id?{...t, name}:t)); }
+  function setGoal(id, on) { setTimers(prev => prev.map(t => t.id===id?{...t, goalOn:on}:t)); }
+  function setCategory(id, c) { setTimers(prev => prev.map(t => t.id===id?{...t, category:c}:t)); }
+
+  function resetDay() {
     setTimers(prev => prev.map(t => ({ ...t, running:false, startTs:null, elapsedSec:0, revisionSec:0, goalFired:false })));
   }
 
-  // precise Add/Subtract (works while running or paused) and clears inputs in the component
-  function adjustTimer(id, deltaSeconds) {
-    setTimers(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      if (t.running) {
-        const add = t.startTs ? (Date.now() - t.startTs) / 1000 : 0; // capture run so far
-        const newElapsed = Math.max(0, t.elapsedSec + add + deltaSeconds);
-        return { ...t, elapsedSec: newElapsed, startTs: Date.now() };
-      } else {
-        const newElapsed = Math.max(0, t.elapsedSec + deltaSeconds);
-        return { ...t, elapsedSec: newElapsed };
-      }
-    }));
+  function exportCSV() {
+    const rows = [["Name","Seconds","Time"], ...timers.map(t => { const net = Math.max(0, (t.elapsedSec||0) - (t.revisionSec||0)); return [t.name, String(net), fmtHMS(net)]; })];
+    const csv = rows.map(r => r.map(x => `"${String(x).replaceAll('"','""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type:"text/csv" });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `timers-${new Date().toISOString().slice(0,10)}.csv`; a.click();
   }
 
-  function applyPatch(id, patch) {
-    // special case: editor can send _delta to add/subtract now
-    if (patch && typeof patch._delta === "number") { adjustTimer(id, patch._delta); const { _delta, ...rest } = patch; if (Object.keys(rest).length === 0) return; patch = rest; }
-    setTimers(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
+  // drag & drop order
+  const dragId = useRef(null);
+  function onDragStart(e, id) { dragId.current = id; e.dataTransfer.effectAllowed = "move"; }
+  function onDragOverList(e, overId) {
+    e.preventDefault();
+    const from = dragId.current; if (!from || from===overId) return;
+    setTimers(prev => {
+      const arr = [...prev];
+      const i = arr.findIndex(t => t.id===from);
+      const j = arr.findIndex(t => t.id===overId);
+      if (i===-1 || j===-1) return prev;
+      const [m] = arr.splice(i,1);
+      arr.splice(j,0,m);
+      return arr.map((t,idx)=>({ ...t, sort_index: idx }));
+    });
   }
 
-  function addTimer() {
-    const t = { id: uid(), name: "New Timer", targetSec:0, revisionSec:0, running:false, startTs:null, elapsedSec:0, goalOn:false, goalFired:false, category:"neutral", color: THEME_SWATCHES[2].val };
-    setTimers(prev => [t, ...prev]);
-    setEditTimer(t);
-  }
-  function removeTimer(id) {
-    setTimers(prev => prev.filter(t => t.id !== id));
-    setEditTimer(null);
-  }
+  // totals
+  const totalTracked = useMemo(() => fmtHMS(timers.reduce((a,t)=> a + Math.max(0,(t.elapsedSec||0)-(t.revisionSec||0)),0)), [timers]);
 
-  // drag & drop
-  function onDragStart(e, id) { setDragId(id); e.dataTransfer.setData("text/plain", id); e.dataTransfer.effectAllowed = "move"; }
-  function onDragOverItem(e, overId) {
-    e.preventDefault(); const dragging = dragId; if (!dragging || dragging === overId) return;
-    setTimers(prev => { const arr=[...prev]; const from=arr.findIndex(x=>x.id===dragging); const to=arr.findIndex(x=>x.id===overId); if(from<0||to<0) return prev; const [m]=arr.splice(from,1); arr.splice(to,0,m); return arr; });
-  }
-  function onDropList(e) { e.preventDefault(); setDragId(null); }
-
-  // celebration overlay (persists until click)
-  function startCelebration(message) { setCelebration({ active:true, message }); startConfettiContinuous(); }
-  function stopCelebration() { setCelebration({ active:false, message:"" }); stopConfetti(); }
-  function startConfettiContinuous() {
-    const layer = confettiLayer.current; if (!layer) return; if (confettiIntervalRef.current) clearInterval(confettiIntervalRef.current);
-    confettiIntervalRef.current = setInterval(() => { spawnConfettiBurst(layer, 24); }, 140);
-  }
-  function stopConfetti() { if (confettiIntervalRef.current) { clearInterval(confettiIntervalRef.current); confettiIntervalRef.current = null; } const layer=confettiLayer.current; if(layer) layer.querySelectorAll('.confetti-piece').forEach(n=>n.remove()); }
-  function spawnConfettiBurst(layer, count=140) {
-    for (let i=0;i<count;i++) { const piece=document.createElement("span"); piece.className="confetti-piece"; const size=Math.random()*8+6; const startLeft=Math.random()*100; const rotate=Math.random()*360; const duration=2200+Math.random()*2400; piece.style.setProperty("--size",`${size}px`); piece.style.setProperty("--left",`${startLeft}vw`); piece.style.setProperty("--rotate",`${rotate}deg`); piece.style.setProperty("--duration",`${duration}ms`); layer.appendChild(piece); setTimeout(()=>piece.remove(), duration+200); }
-  }
-
-  const totalTracked = useMemo(() => timers.reduce((a, t) => a + timerNetSeconds(t), 0), [timers]);
-
-  /* ---------------- UI ---------------- */
   return (
-    <div className="min-h-screen w-full overflow-hidden relative">
-      {/* Background */}
-      <div className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-950 animate-gradient" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.08),transparent_40%),radial-gradient(circle_at_80%_0%,rgba(255,255,255,0.06),transparent_35%),radial-gradient(circle_at_10%_90%,rgba(255,255,255,0.05),transparent_35%)]" />
-        <div className="absolute inset-0 opacity-20 bg-[linear-gradient(120deg,transparent_0%,transparent_15%,white_16%,transparent_17%,transparent_100%)] animate-shimmer" />
+    <div className="min-h-screen text-white selection:bg-cyan-500/30">
+      {/* moving background highlight */}
+      <div className="fixed inset-0 -z-10 bg-[radial-gradient(1200px_600px_at_70%_-10%,rgba(255,255,255,0.09),transparent_60%)]" />
+
+      <NavBar
+        profile={profile}
+        onOpenProfile={()=>setProfileOpen(true)}
+        addTimer={addTimer}
+        resetDay={resetDay}
+        exportCSV={exportCSV}
+        totalTracked={totalTracked}
+        user={user}
+      />
+
+      {/* timers list */}
+      <div className="max-w-5xl mx-auto px-4 pb-24">
+        <div className="flex flex-col gap-6">
+          {timers.map(t => {
+            const netSeconds = Math.max(0, (t.elapsedSec||0) - (t.revisionSec||0));
+            return (
+              <TimerCard key={t.id} t={t}
+                onDragStart={onDragStart}
+                onDragOverItem={(e)=>onDragOverList(e, t.id)}
+                onClick={()=>setEditTimer(t)}
+                start={()=>startTimer(t.id)}
+                pause={()=>pauseTimer(t.id)}
+                reset={()=>resetTimer(t.id)}
+                netSeconds={netSeconds}
+                adjust={(delta)=>adjustTimer(t.id, delta)}
+              />
+            );
+          })}
+        </div>
       </div>
 
-      {/* Confetti Layer */}
-      <div ref={confettiLayer} className="pointer-events-none fixed inset-0 z-40 overflow-hidden" />
-
-      {/* Celebration Overlay */}
-      {celebration.active && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={stopCelebration}>
-          <div className="text-center px-6">
-            <div className="text-3xl md:text-5xl font-extrabold glow-text animate-glow bg-clip-text text-transparent bg-[linear-gradient(90deg,#a7f3d0,#60a5fa,#f472b6,#fde68a,#a7f3d0)] bg-[length:200%_100%]">
-              {celebration.message}
-            </div>
-            <div className="mt-3 text-white/80">Click anywhere to dismiss</div>
-          </div>
-        </div>
-      )}
-
-      {/* Top Bar */}
-      <header className="sticky top-0 z-30 backdrop-blur bg-slate-900/60 border-b border-white/10">
-        <div className="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
-          {/* Combined: Profile / Sign in */}
-          <button onClick={() => { user ? setProfileOpen(true) : setAuthOpen(true); }} className="flex items-center gap-3 group">
-            <div className="relative">
-              {profile.photo ? (
-                <img src={profile.photo} alt="avatar" className="w-10 h-10 rounded-2xl object-cover shadow-lg shadow-cyan-500/20" />
-              ) : (
-                <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/15 grid place-items-center text-xl">
-                  <span className="select-none">{profile.emoji || "🌟"}</span>
-                </div>
-              )}
-              <div className="absolute -right-1 -bottom-1 w-5 h-5 rounded-full bg-white/15 border border-white/20 flex items-center justify-center text-xs">✏️</div>
-            </div>
-            <div className="text-left">
-              <div className="text-white font-bold text-lg leading-5">{user ? (profile.name || "Your Name") : "Sign in"}</div>
-              <div className="text-white/70 text-xs">Time Tracker</div>
-            </div>
-          </button>
-
-          <div className="flex items-center gap-2">
-            <button onClick={addTimer} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 text-white font-semibold shadow-lg hover:scale-[1.02] active:scale-[0.98] transition">+ Add Timer</button>
-            <button onClick={resetAll} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 border border-white/10 hover:bg-white/15">Reset Day</button>
-            <button onClick={()=>exportCSV(timers)} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 border border-white/10 hover:bg-white/15">Export CSV</button>
-            <div className="text-slate-300 text-sm hidden md:block">
-              Total tracked: <span className="time-mono text-white font-semibold">{fmtHMS(totalTracked)}</span>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Timers List */}
-      <main className="mx-auto max-w-5xl px-4 py-6">
-        <div className="space-y-4" onDragOver={(e) => e.preventDefault()} onDrop={onDropList}>
-          {timers.map((t) => (
-            <TimerCard
-              key={t.id}
-              t={t}
-              onDragStart={onDragStart}
-              onDragOverItem={onDragOverItem}
-              onClick={() => setEditTimer(t)}
-              start={() => startTimer(t.id)}
-              pause={() => pauseTimer(t.id)}
-              reset={() => resetTimer(t.id)}
-              netSeconds={timerNetSeconds(t)}
-              adjust={(d)=>adjustTimer(t.id, d)}
-            />
-          ))}
-          {timers.length === 0 && (
-            <div className="text-center text-white/60 py-16 border border-white/10 rounded-3xl bg-white/5">
-              No timers. Click “+ Add Timer”.
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* Modals */}
       {editTimer && (
-        <Modal onClose={() => setEditTimer(null)}>
+        <Modal onClose={()=>setEditTimer(null)}>
           <TimerEditor
-            timer={editTimer}
-            onSave={(patch) => { applyPatch(editTimer.id, patch); setEditTimer(null); }}
-            onDelete={() => removeTimer(editTimer.id)}
-            onStart={() => { startTimer(editTimer.id); setEditTimer(null); }}
-            onPause={() => { pauseTimer(editTimer.id); setEditTimer(null); }}
+            t={editTimer}
+            onClose={()=>setEditTimer(null)}
+            onDelete={()=>removeTimer(editTimer.id)}
+            onName={(v)=>setName(editTimer.id, v)}
+            onTarget={(sec)=>setTarget(editTimer.id, sec)}
+            onGoal={(on)=>setGoal(editTimer.id, on)}
+            onCategory={(c)=>setCategory(editTimer.id, c)}
+            onTheme={(cls)=>setTheme(editTimer.id, cls)}
           />
         </Modal>
       )}
 
       {profileOpen && (
-        <Modal onClose={() => setProfileOpen(false)}>
-          <ProfileEditor profile={profile} user={user} onSave={(p) => { setProfile(p); setProfileOpen(false); }} />
+        <Modal onClose={()=>setProfileOpen(false)}>
+          <ProfileEditor profile={profile} onSave={(p)=>{ setProfile(p); setProfileOpen(false); }} />
         </Modal>
       )}
 
-      {/* Auth panel */}
-      {authOpen && <AuthPanel user={user} onClose={() => setAuthOpen(false)} />}
+      {celebration && (
+        <CelebrationOverlay name={celebration.name} target={celebration.target} onClose={()=>setCelebration(null)} />
+      )}
 
       <StyleTags />
-      <ClassKeepAlive />
     </div>
   );
 }
 
-/* ---------------- Card & UI components ---------------- */
+// ---------------- UI Bits ----------------
+function NavBar({ profile, onOpenProfile, addTimer, resetDay, exportCSV, totalTracked, user }) {
+  return (
+    <div className="sticky top-0 z-30 backdrop-blur bg-slate-900/65 border-b border-white/10">
+      <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+        <button onClick={onOpenProfile} className="flex items-center gap-3 group">
+          <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/15 grid place-items-center text-xl">{profile.emoji || "🌟"}</div>
+          <div className="text-left">
+            <div className="font-semibold">{profile.name || "Your Name"}</div>
+            <div className="text-xs text-white/70">Time Tracker</div>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-2">
+          <button onClick={addTimer} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-sky-500 to-blue-600 hover:brightness-110 active:scale-95 shadow">+ Add Timer</button>
+          <button onClick={resetDay} className="px-3 py-2 rounded-xl bg-white/10 border border-white/10 hover:bg-white/15">Reset Day</button>
+          <button onClick={exportCSV} className="px-3 py-2 rounded-xl bg-white/10 border border-white/10 hover:bg-white/15">Export CSV</button>
+          <div className="text-white/80 text-sm pl-2">Total tracked: <span className="time-mono">{totalTracked}</span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, reset, netSeconds, adjust }) {
   const [xy, setXy] = useState({ x: 50, y: 50 });
   const running = t.running;
@@ -384,11 +362,8 @@ function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, rese
       }}
       className={`group relative cursor-grab active:cursor-grabbing rounded-3xl border border-white/10 backdrop-blur p-4 shadow-lg transition hover:scale-[1.01] bg-gradient-to-br ${t.color}`}
     >
-      {/* radial hover glow on its own layer so it DOES NOT override the theme gradient */}
-      <div
-        className="pointer-events-none absolute inset-0 rounded-3xl"
-        style={{ background: `radial-gradient(600px circle at ${xy.x}% ${xy.y}%, rgba(255,255,255,0.10), transparent 40%)` }}
-      />
+      {/* preserve theme gradient; hover glow separate layer */}
+      <div className="pointer-events-none absolute inset-0 rounded-3xl" style={{ background: `radial-gradient(600px circle at ${xy.x}% ${xy.y}%, rgba(255,255,255,0.10), transparent 40%)` }} />
 
       <div className="relative flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -400,22 +375,15 @@ function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, rese
         </div>
         <div className="flex items-center gap-2">
           <div className="time-mono text-white text-2xl drop-shadow-sm min-w-[130px] text-right">{fmtHMS(netSeconds)}</div>
-          <button
-            onClick={(e) => { e.stopPropagation(); running ? pause() : start(); }}
-            className={`w-11 h-11 rounded-full grid place-items-center text-xl text-white shadow-lg transition ${running ? "bg-gradient-to-tr from-rose-500 to-red-500" : "bg-gradient-to-tr from-lime-500 to-green-600"}`}
-            aria-label={running ? "Pause" : "Start"}
-          >
-            {running ? "❚❚" : "►"}
-          </button>
-          <button onClick={(e) => { e.stopPropagation(); reset(); }} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 hover:bg-white/20 border border-white/10">Reset</button>
-          {/* Edit button removed — entire card opens the editor */}
+          <button onClick={(e)=>{ e.stopPropagation(); running? pause(): start(); }} className={`w-11 h-11 rounded-full grid place-items-center text-xl text-white shadow-lg transition ${running? "bg-gradient-to-tr from-rose-500 to-red-500" : "bg-gradient-to-tr from-lime-500 to-green-600"}`}>{running? "❚❚" : "►"}</button>
+          <button onClick={(e)=>{ e.stopPropagation(); reset(); }} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 hover:bg-white/20 border border-white/10">Reset</button>
         </div>
       </div>
 
-      {/* Quick adjust row */}
+      {/* Quick adjust */}
       <QuickAdjust onAdd={(s)=>adjust(+s)} onSub={(s)=>adjust(-s)} />
 
-      {/* Shine overlay */}
+      {/* Shine */}
       <div className="pointer-events-none absolute inset-0 rounded-3xl overflow-hidden">
         <div className="absolute -inset-[40%] rotate-12 bg-gradient-to-r from-transparent via-white/10 to-transparent translate-x-[-120%] group-hover:animate-card-shine" />
       </div>
@@ -425,223 +393,187 @@ function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, rese
 
 function QuickAdjust({ onAdd, onSub }) {
   const [h, setH] = useState(0); const [m, setM] = useState(0);
-  function toSec(){ return Math.max(0, (parseInt(h)||0)*3600 + (parseInt(m)||0)*60); }
-  function add(){ const s=toSec(); if(s>0){ onAdd(s); setH(0); setM(0); } }
-  function sub(){ const s=toSec(); if(s>0){ onSub(s); setH(0); setM(0); } }
+  function fire(delta) { const s = toSeconds(h, m); if (s>0) { delta>0? onAdd(s): onSub(s); setH(0); setM(0); } }
   return (
-    <div className="mt-3 flex items-center gap-2 text-sm">
-      <span className="text-white/70">Adjust:</span>
-      <input type="number" min="0" value={h} onClick={(e)=>e.stopPropagation()} onChange={(e)=>setH(e.target.value)} className="w-20 rounded-xl bg-white/10 border border-white/15 px-2 py-1" />
+    <div className="mt-3 flex items-center gap-2 text-sm text-white/80">
+      <span className="opacity-80">Adjust:</span>
+      <input type="number" className="w-16 px-2 py-1 rounded-lg bg-white/10 border border-white/10" value={h} onChange={e=>setH(e.target.value)} min={0} />
       <span>:</span>
-      <input type="number" min="0" max="59" value={m} onClick={(e)=>e.stopPropagation()} onChange={(e)=>setM(clamp(Number(e.target.value),0,59))} className="w-20 rounded-xl bg-white/10 border border-white/15 px-2 py-1" />
-      <button onClick={(e)=>{ e.stopPropagation(); add(); }} className="px-2 py-1 rounded-lg bg-gradient-to-tr from-lime-500 to-green-600">Add</button>
-      <button onClick={(e)=>{ e.stopPropagation(); sub(); }} className="px-2 py-1 rounded-lg bg-gradient-to-tr from-rose-500 to-red-600">Subtract</button>
+      <input type="number" className="w-16 px-2 py-1 rounded-lg bg-white/10 border border-white/10" value={m} onChange={e=>setM(e.target.value)} min={0} />
+      <button onClick={(e)=>{e.stopPropagation(); fire(+1);}} className="px-3 py-1 rounded-lg bg-green-600/80 hover:bg-green-500">Add</button>
+      <button onClick={(e)=>{e.stopPropagation(); fire(-1);}} className="px-3 py-1 rounded-lg bg-rose-600/80 hover:bg-rose-500">Subtract</button>
+    </div>
+  );
+}
+
+function TimerEditor({ t, onClose, onDelete, onName, onTarget, onGoal, onCategory, onTheme }) {
+  const [name, setNameLocal] = useState(t.name);
+  const [th, setTh] = useState(Math.floor((t.targetSec||0)/3600));
+  const [tm, setTm] = useState(Math.floor(((t.targetSec||0)%3600)/60));
+  const [goal, setGoalLocal] = useState(!!t.goalOn);
+  const [cat, setCat] = useState(t.category||"neutral");
+  const [theme, setThemeLocal] = useState(t.color);
+
+  function save() {
+    onName(name);
+    onTarget(toSeconds(th, tm));
+    onGoal(goal);
+    onCategory(cat);
+    onTheme(theme);
+    onClose();
+  }
+
+  return (
+    <div className="w-[min(720px,95vw)]">
+      <h2 className="text-2xl font-semibold mb-4">Edit Time Info</h2>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm mb-1">Name</label>
+          <input value={name} onChange={e=>setNameLocal(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/10" />
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Category</label>
+          <div className="flex gap-2">
+            {['work','break','neutral'].map(c => (
+              <button key={c} onClick={()=>setCat(c)} className={`px-3 py-2 rounded-xl border ${cat===c? 'bg-white/20 border-white/20' : 'bg-white/10 border-white/10'}`}>{c[0].toUpperCase()+c.slice(1)}</button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Target Time (H : M)</label>
+          <div className="flex items-center gap-2">
+            <input type="number" className="w-24 px-2 py-2 rounded-xl bg-white/10 border border-white/10" value={th} onChange={e=>setTh(e.target.value)} />
+            <span>:</span>
+            <input type="number" className="w-24 px-2 py-2 rounded-xl bg-white/10 border border-white/10" value={tm} onChange={e=>setTm(e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Goal Celebration</label>
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" className="hidden" checked={goal} onChange={e=>setGoalLocal(e.target.checked)} />
+            <span className={`w-12 h-6 rounded-full p-1 transition ${goal?'bg-emerald-500':'bg-white/20'}`}>
+              <span className={`block w-4 h-4 rounded-full bg-white transition ${goal?'translate-x-6':''}`} />
+            </span>
+            <span>Celebrate when reaching target</span>
+          </label>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <div className="text-sm mb-2">Theme</div>
+        <div className="grid grid-cols-6 gap-2">
+          {THEMES.map(thm => (
+            <button key={thm.id} onClick={()=>setThemeLocal(thm.cls)}
+              className={`h-10 rounded-xl border ${theme===thm.cls? 'border-white/60' : 'border-white/15'} bg-gradient-to-br ${thm.cls}`} />
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-6 flex items-center gap-2 justify-between">
+        <button onClick={save} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 active:scale-95">Save & Close</button>
+        <button onClick={onDelete} className="px-4 py-2 rounded-xl bg-rose-600/80 hover:bg-rose-500">Delete</button>
+      </div>
+    </div>
+  );
+}
+
+function ProfileEditor({ profile, onSave }) {
+  const [name, setName] = useState(profile.name || "Your Name");
+  const [emoji, setEmoji] = useState(profile.emoji || "🌟");
+  return (
+    <div className="w-[min(560px,95vw)]">
+      <h2 className="text-2xl font-semibold mb-4">Profile</h2>
+      <div className="grid gap-4">
+        <div>
+          <label className="block text-sm mb-1">Name</label>
+          <input value={name} onChange={e=>setName(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/10" />
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Emoji</label>
+          <input value={emoji} onChange={e=>setEmoji(e.target.value)} className="w-full px-3 py-2 rounded-xl bg-white/10 border border-white/10" />
+        </div>
+      </div>
+      <div className="mt-6 flex items-center gap-2 justify-between">
+        <button onClick={()=>onSave({ name, emoji, photo:null })} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 active:scale-95">Save</button>
+        <AuthPanel />
+      </div>
+    </div>
+  );
+}
+
+function AuthPanel() {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
+  const [sending, setSending] = useState(false);
+
+  async function sendLink() {
+    if (!supabase) { alert("Supabase env vars missing."); return; }
+    setErr(""); setSending(true);
+    const { error } = await supabase.auth.signInWithOtp({ email, options:{ emailRedirectTo: window.location.origin } });
+    setSending(false);
+    if (error) setErr(error.message); else setSent(true);
+  }
+  async function signOut() { await supabase?.auth.signOut(); }
+
+  return (
+    <div className="flex items-center gap-2">
+      <input type="email" placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)} className="px-3 py-2 rounded-xl bg-white/10 border border-white/10" />
+      <button onClick={sendLink} disabled={!email || sending} className="px-3 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 active:scale-95 disabled:opacity-60">{sending?"Sending...": sent?"Link sent ✓":"Send magic link"}</button>
+      <button onClick={signOut} className="px-3 py-2 rounded-xl bg-white/10 border border-white/10">Sign out</button>
+      {err && <div className="text-rose-400 text-sm ml-2">{err}</div>}
     </div>
   );
 }
 
 function Modal({ children, onClose }) {
-  useEffect(() => { function onKey(e){ if(e.key==="Escape") onClose(); } window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }, [onClose]);
+  useEffect(() => {
+    function onKey(e){ if (e.key==='Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-xl rounded-3xl border border-white/10 bg-slate-900/85 p-6 text-white shadow-2xl">
-        <button onClick={onClose} className="absolute right-3 top-3 rounded-full bg-white/10 hover:bg-white/20 w-8 h-8 grid place-items-center" aria-label="Close">✕</button>
+    <div className="fixed inset-0 z-40 grid place-items-center px-4" onMouseDown={onClose}>
+      <div className="absolute inset-0 bg-black/60" />
+      <div className="relative bg-slate-900/90 border border-white/15 rounded-3xl p-5 backdrop-blur w-full max-w-3xl" onMouseDown={e=>e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-3 right-3 w-9 h-9 rounded-xl bg-white/10 border border-white/10">✕</button>
         {children}
       </div>
     </div>
   );
 }
 
-function Segmented({ value, onChange, options }) {
+function CelebrationOverlay({ name, target, onClose }) {
+  useEffect(() => {
+    const pieces = 180;
+    for (let i=0;i<pieces;i++) {
+      const el = document.createElement('div');
+      el.className = 'confetti-piece';
+      el.style.setProperty('--left', Math.random()*100 + 'vw');
+      el.style.setProperty('--size', (6+Math.random()*6)+'px');
+      el.style.setProperty('--rotate', (Math.random()*360)+'deg');
+      el.style.setProperty('--duration', (2.5+Math.random()*1.8)+'s');
+      document.body.appendChild(el);
+      setTimeout(()=>el.remove(), 4200);
+    }
+  }, []);
   return (
-    <div className="inline-flex rounded-xl bg-white/10 p-1 border border-white/10">
-      {options.map((opt) => (
-        <button key={opt.value} type="button" onClick={() => onChange(opt.value)} className={`px-3 py-1.5 rounded-lg text-sm transition ${value === opt.value ? "bg-white/30 text-white" : "text-white/80 hover:bg-white/20"}`}>{opt.label}</button>
-      ))}
-    </div>
-  );
-}
-
-function Switch({ checked, onChange, label }) {
-  return (
-    <button type="button" onClick={() => onChange(!checked)} className="relative inline-flex items-center gap-2 select-none" aria-pressed={checked}>
-      <span className="text-sm text-white/80">{label}</span>
-      <span className={`w-12 h-7 rounded-full p-1 transition bg-white/10 border border-white/10 ${checked ? "ring-2 ring-green-400/60" : ""}`}>
-        <span className={`block w-5 h-5 rounded-full bg-gradient-to-tr ${checked ? "from-lime-400 to-green-500 translate-x-5" : "from-slate-300 to-slate-100 translate-x-0"} shadow-md transition`} />
-      </span>
-    </button>
-  );
-}
-
-function ThemeSwatches({ value, onChange }) {
-  return (
-    <div className="grid grid-cols-4 gap-2">
-      {THEME_SWATCHES.map(s => (
-        <button key={s.id} type="button" onClick={() => onChange(s.val)} className={`h-10 rounded-xl border ${value===s.val?"border-white/80":"border-white/10"} bg-gradient-to-r ${s.val} relative overflow-hidden`}>
-          <span className="absolute inset-0 bg-[linear-gradient(120deg,transparent,rgba(255,255,255,0.15),transparent)] translate-x-[-120%] hover:animate-card-shine" />
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function TimerEditor({ timer, onSave, onDelete, onStart, onPause }) {
-  const [form, setForm] = useState({ ...timer });
-  const [targetH, setTargetH] = useState(Math.floor((form.targetSec || 0) / 3600));
-  const [targetM, setTargetM] = useState(Math.floor(((form.targetSec || 0) % 3600) / 60));
-  const [adjH, setAdjH] = useState(0); const [adjM, setAdjM] = useState(0);
-
-  function patch(name, value) { setForm(f => ({ ...f, [name]: value })); }
-  function save() { const tSec = clamp(Number(targetH)*3600 + Number(targetM)*60, 0, 999*3600); onSave({ ...form, targetSec: tSec }); }
-  function applyAdjust(sign){ const s = Math.max(0,(parseInt(adjH)||0)*3600 + (parseInt(adjM)||0)*60); if(s>0){ onSave({ _delta: sign>0 ? s : -s }); setAdjH(0); setAdjM(0); } }
-
-  return (
-    <div className="space-y-5">
-      <h3 className="text-xl font-bold">Edit Time Info</h3>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <Field label="Name">
-          <input value={form.name} onChange={(e) => patch("name", e.target.value)} className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-cyan-400/60 text-white placeholder-white/50" />
-        </Field>
-        <Field label="Category">
-          <Segmented value={form.category} onChange={(v) => patch("category", v)} options={[{label:"Work", value:"work"},{label:"Break", value:"break"},{label:"Neutral", value:"neutral"}]} />
-        </Field>
-
-        <Field label="Target Time (H : M)">
-          <div className="flex items-center gap-2">
-            <input type="number" min="0" value={targetH} onChange={(e) => setTargetH(e.target.value)} className="w-20 rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white" />
-            <span>:</span>
-            <input type="number" min="0" max="59" value={targetM} onChange={(e) => setTargetM(clamp(Number(e.target.value),0,59))} className="w-20 rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white" />
-          </div>
-        </Field>
-
-        <Field label="Goal Celebration">
-          <Switch checked={!!form.goalOn} onChange={(v) => patch("goalOn", v)} label="Celebrate when reaching target" />
-        </Field>
-
-        <Field label="Theme">
-          <ThemeSwatches value={form.color} onChange={(v) => patch("color", v)} />
-          <div className={`mt-2 h-3 rounded-full bg-gradient-to-r ${form.color}`} />
-        </Field>
-      </div>
-
-      {/* Adjust inside editor */}
-      <div className="flex items-center gap-2 text-sm">
-        <span className="text-white/70">Adjust now:</span>
-        <input type="number" min="0" value={adjH} onChange={(e)=>setAdjH(e.target.value)} className="w-20 rounded-xl bg-white/10 border border-white/15 px-2 py-1" />
-        <span>:</span>
-        <input type="number" min="0" max="59" value={adjM} onChange={(e)=>setAdjM(clamp(Number(e.target.value),0,59))} className="w-20 rounded-xl bg-white/10 border border-white/15 px-2 py-1" />
-        <button onClick={()=>applyAdjust(+1)} className="px-2 py-1 rounded-lg bg-gradient-to-tr from-lime-500 to-green-600">Add</button>
-        <button onClick={()=>applyAdjust(-1)} className="px-2 py-1 rounded-lg bg-gradient-to-tr from-rose-500 to-red-600">Subtract</button>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-2">
-          <button onClick={save} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 font-semibold">Save & Close</button>
-          <button onClick={() => onSave({ goalFired: false })} className="px-3 py-2 rounded-xl bg-white/10">Reset Celebration</button>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={onStart} className="px-3 py-2 rounded-xl bg-gradient-to-r from-lime-500 to-green-600 font-semibold">Start</button>
-          <button onClick={onPause} className="px-3 py-2 rounded-xl bg-gradient-to-r from-rose-500 to-red-600 font-semibold">Pause</button>
-          <button onClick={onDelete} className="px-3 py-2 rounded-xl bg-white/10 border border-rose-400/30 text-rose-200">Delete</button>
-        </div>
+    <div className="fixed inset-0 z-[60] grid place-items-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div className="relative text-center">
+        <div className="text-5xl sm:text-6xl font-extrabold bg-gradient-to-r from-pink-300 via-white to-cyan-200 bg-clip-text text-transparent glow-text">Congratulations!</div>
+        <div className="mt-3 text-white/90 text-xl">You reached your goal for <span className="font-semibold">{name}</span> ({fmtHMS(target)}).</div>
+        <div className="mt-6 text-white/80">Click anywhere to dismiss</div>
       </div>
     </div>
   );
 }
 
-function ProfileEditor({ profile, onSave, user }) {
-  const EMOJIS = ["😺","🐻","🐼","🦊","🐯","🐵","🐨","🐸","🐰","🐥","🌟","🚀","🎨","🎧","🧠","🐳","🍀","🔥","💎","🍉","🍩"];
-  const [name, setName] = useState(profile.name || "");
-  const [emoji, setEmoji] = useState(profile.emoji || "🌟");
-  const [photo, setPhoto] = useState(profile.photo || null);
-
-  function onFile(e) { const f = e.target.files?.[0]; if (!f) return; const reader = new FileReader(); reader.onload = () => { setPhoto(reader.result); }; reader.readAsDataURL(f); }
-
-  async function signOut(){ if(supabase) await supabase.auth.signOut(); }
-
-  return (
-    <div className="space-y-4">
-      <h3 className="text-xl font-bold">{user? user.email : 'Profile'}</h3>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
-        <div className="md:col-span-1">
-          <div className="w-16 h-16 rounded-2xl bg-white/10 border border-white/15 grid place-items-center text-2xl mb-2">
-            {photo ? <img src={photo} alt="avatar" className="w-16 h-16 rounded-2xl object-cover" /> : <span>{emoji}</span>}
-          </div>
-          <div className="text-xs text-white/70">Current avatar</div>
-        </div>
-        <div className="md:col-span-2 space-y-3">
-          <Field label="Name">
-            <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Your Name" className="w-full rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-white" />
-          </Field>
-          <Field label="Choose an Emoji Avatar (no storage)">
-            <div className="grid grid-cols-8 gap-2">
-              {EMOJIS.map(ej => (
-                <button key={ej} type="button" onClick={()=>{ setEmoji(ej); setPhoto(null); }} className={`h-10 rounded-xl border grid place-items-center text-lg ${emoji===ej?"border-white/80 bg-white/10":"border-white/10 bg-white/5 hover:bg-white/10"}`}>{ej}</button>
-              ))}
-            </div>
-          </Field>
-          <details className="text-sm text-white/70">
-            <summary className="cursor-pointer mb-2">Or upload an image file</summary>
-            <input type="file" accept="image/*" onChange={onFile} className="text-sm" />
-          </details>
-        </div>
-      </div>
-      <div className="flex justify-between gap-2">
-        <button onClick={()=>onSave({ name, emoji, photo })} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 font-semibold">Save</button>
-        {user && <button onClick={signOut} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-rose-500 to-red-600">Sign out</button>}
-      </div>
-    </div>
-  );
-}
-
-function Field({ label, children }) { return (<label className="text-sm text-white/80 space-y-1 block"><div className="ml-1 mb-0.5">{label}</div>{children}</label>); }
-
-/* ---------------- Auth Panel (magic link) ---------------- */
-function AuthPanel({ user, onClose }) {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [err, setErr] = useState("");
-
-  async function sendLink() {
-    if (!supabase) { alert("Supabase env vars missing."); return; }
-    setErr("");
-    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
-    if (error) setErr(error.message); else setSent(true);
-  }
-
-  return (
-    <div className="fixed inset-0 z-[70]">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-slate-900/90 p-5 text-white">
-          <button className="absolute right-3 top-3" onClick={onClose}>✕</button>
-          <div className="space-y-3">
-            <div className="text-lg font-semibold">Sign in</div>
-            <input placeholder="you@example.com" value={email} onChange={(e)=>setEmail(e.target.value)} className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2" />
-            <button onClick={sendLink} className="w-full px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500">Send magic link</button>
-            {sent && <div className="text-emerald-300 text-sm">Check your email and click the link.</div>}
-            {err && <div className="text-rose-300 text-sm">{err}</div>}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------- Export CSV ---------------- */
-function exportCSV(timers){
-  const rows = [["id","name","category","targetSec","elapsedSec","revisionSec","running","startTs","goalOn","goalFired","color","netSec","human"]];
-  const data = timers.map(t=>{ const runningNow = t.running && t.startTs ? (Date.now()-t.startTs)/1000 : 0; const net = Math.max(0,(t.elapsedSec + runningNow) - (t.revisionSec||0)); return [t.id,t.name,t.category,t.targetSec,Math.floor(t.elapsedSec),Math.floor(t.revisionSec||0),t.running?1:0,t.startTs||"",t.goalOn?1:0,t.goalFired?1:0,t.color,Math.floor(net),fmtHMS(net)]; });
-  const csv = rows.concat(data).map(r=>r.map(x=>`"${String(x).replaceAll('"','""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`shiny-timer-${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
-}
-
-/* ---------------- Global styles ---------------- */
+// ---------------- Global styles ----------------
 function StyleTags() {
   return (
     <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Monomakh:wght@600&display=swap');
       html,body,#root{height:100%}
       body{background:#0b1220}
       @keyframes gradientMove { 0%{background-position:0% 0%} 50%{background-position:100% 100%} 100%{background-position:0% 0%} }
@@ -650,49 +582,26 @@ function StyleTags() {
       .animate-shimmer { background-size:200% 100%; animation: shimmer 14s linear infinite; }
       @keyframes cardShine { 0%{ transform: translateX(-120%) rotate(12deg);} 100%{ transform: translateX(120%) rotate(12deg);} }
       .animate-card-shine { animation: cardShine 1.1s ease forwards; }
-      .time-mono {
-      font-family: "Monomakh", sans-serif;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      font-size: 2rem; /* Adjust size here */
-      }
-
-
-
-
-      /* Confetti */
+      .time-mono { font-family: "Monomakh", sans-serif; font-weight: 600; font-variant-numeric: tabular-nums; font-size: 2rem; }
       .confetti-piece { position: fixed; top: -10vh; left: var(--left); width: var(--size); height: var(--size); background: hsl(var(--h,0),95%,60%); transform: rotate(var(--rotate)); animation: confettiFall var(--duration) ease-out forwards, confettiSpin calc(var(--duration)*0.8) linear infinite; z-index: 9999; border-radius: 2px; box-shadow: 0 0 0 1px rgba(255,255,255,0.15) inset; }
       .confetti-piece:nth-child(5n) { --h: 190 } .confetti-piece:nth-child(5n+1) { --h: 140 } .confetti-piece:nth-child(5n+2) { --h: 40 } .confetti-piece:nth-child(5n+3) { --h: 320 } .confetti-piece:nth-child(5n+4) { --h: 260 }
       @keyframes confettiFall { 0%{ transform: translateY(-10vh) rotate(var(--rotate)); opacity:1 } 100%{ transform: translateY(110vh) rotate(calc(var(--rotate) + 360deg)); opacity:.9 } }
       @keyframes confettiSpin { from { filter: brightness(1) } to { filter: brightness(1.2) } }
-
-      /* Glowing headline */
       .glow-text { filter: drop-shadow(0 0 14px rgba(255,255,255,0.25)) drop-shadow(0 0 34px rgba(255,255,255,0.15)); }
       @keyframes glow { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
       .animate-glow { animation: glow 8s ease infinite; }
+      /* Keep dynamic gradient classes alive for Tailwind v4 tree-shake */
+      .safelist { display:none }
+      .safelist:where(.x){
+        background-image: linear-gradient(to bottom right, var(--tw-gradient-stops));
+      }
+      /* classes to preserve */
+      .keep-1{ background-image: linear-gradient(to bottom right, rgb(96 165 250 / 0.25), rgb(79 70 229 / 0.25)); }
+      .keep-2{ background-image: linear-gradient(to bottom right, rgb(110 231 183 / 0.25), rgb(22 163 74 / 0.25)); }
+      .keep-3{ background-image: linear-gradient(to bottom right, rgb(232 121 249 / 0.25), rgb(147 51 234 / 0.25)); }
+      .keep-4{ background-image: linear-gradient(to bottom right, rgb(251 191 36 / 0.25), rgb(244 63 94 / 0.25)); }
+      .keep-5{ background-image: linear-gradient(to bottom right, rgb(248 113 113 / 0.25), rgb(220 38 38 / 0.25)); }
+      .keep-6{ background-image: linear-gradient(to bottom right, rgb(148 163 184 / 0.2), rgb(51 65 85 / 0.2)); }
     `}</style>
-  );
-}
-
-/* ---------------- Keep dynamic gradient classes (Tailwind v4) ---------------- */
-function ClassKeepAlive() {
-  return (
-    <div className="
-      hidden
-      bg-gradient-to-r bg-gradient-to-br bg-gradient-to-tr
-      from-cyan-500/30 to-blue-500/30
-      from-emerald-500/30 to-teal-500/30
-      from-violet-500/30 to-fuchsia-500/30
-      from-amber-500/30 to-orange-500/30
-      from-lime-500/30 to-green-500/30
-      from-sky-500/30 to-indigo-500/30
-      from-rose-500/30 to-red-500/30
-      from-cyan-500 to-blue-500
-      from-lime-500 to-green-600
-      from-rose-500 to-red-600
-      from-lime-400 to-green-500
-      from-slate-300 to-slate-100
-      ring-green-400/60
-    " />
   );
 }
