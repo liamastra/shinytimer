@@ -82,13 +82,14 @@ export default function App() {
     (async () => {
       const { data: rows, error } = await supabase
         .from("timers").select("*")
-        .eq("user_id", user.id);
+        .eq("user_id", user.id)
+        .eq("deleted", false) // <— important: filter out soft-deleted
+        .order("sort_index", { ascending: true });
       if (!error) {
-        const filtered = (rows || []).filter(r => !r.deleted); // tolerate missing column
-        if (filtered.length === 0 && timers.length > 0) {
+        if (!rows || rows.length === 0 && timers.length>0) {
           await upsertAllToCloud(user.id, timers);
-        } else {
-          const mapped = filtered.map(r => ({
+        } else if (rows) {
+          const mapped = rows.map(r => ({
             id:r.id, name:r.name, targetSec:r.target_sec, revisionSec:r.revision_sec,
             elapsedSec:r.elapsed_sec, startTs:r.start_ts??null, running:r.running,
             goalOn:r.goal_on, goalFired:r.goal_fired, category:r.category, color:r.color,
@@ -163,25 +164,6 @@ export default function App() {
     const { error } = await supabase.from("timers").upsert(rows, { onConflict:"id" }); if (error) console.error(error);
   }
 
-  // explicit Save Layout (persist deletes + order)
-  async function reconcileCloud() {
-    if (!supabase || !user) return;
-    // 1) push current timers (order/index)
-    await upsertAllToCloud(user.id, timers);
-    // 2) delete rows that exist remotely but not locally
-    const { data: rows, error } = await supabase.from('timers').select('id').eq('user_id', user.id);
-    if (!error && rows) {
-      const localIds = new Set(timers.map(t => t.id));
-      const toDelete = rows.map(r=>r.id).filter(id => !localIds.has(id));
-      for (const id of toDelete) {
-        const del = await supabase.from('timers').delete().eq('user_id', user.id).eq('id', id);
-        if (del.error) {
-          await supabase.from('timers').update({ deleted:true, updated_at:new Date().toISOString() }).eq('user_id', user.id).eq('id', id);
-        }
-      }
-    }
-  }
-
   /* ---------- Timer math & logic ---------- */
   function timerNetSeconds(t) {
     const runningNow = t.running && t.startTs ? (Date.now() - t.startTs) / 1000 : 0;
@@ -231,7 +213,7 @@ export default function App() {
     setTimers(prev => prev.map(t => ({ ...t, running:false, startTs:null, elapsedSec:0, revisionSec:0, goalFired:false })));
   }
 
-  // precise Add/Subtract (works while running or paused) and clears inputs in the component
+  // precise Add/Subtract (works while running or paused) — main UI only
   function adjustTimer(id, deltaSeconds) {
     setTimers(prev => prev.map(t => {
       if (t.id !== id) return t;
@@ -247,8 +229,6 @@ export default function App() {
   }
 
   function applyPatch(id, patch) {
-    // special case: editor can send _delta to add/subtract now
-    if (patch && typeof patch._delta === "number") { adjustTimer(id, patch._delta); const { _delta, ...rest } = patch; if (Object.keys(rest).length === 0) return; patch = rest; }
     setTimers(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
   }
 
@@ -262,16 +242,15 @@ export default function App() {
     setTimers(prev => prev.filter(t => t.id !== id));
     setEditTimer(null);
     if (supabase && user) {
-      // Try hard delete first (may fail with RLS)
+      // Try hard delete first (should pass your policy). If it fails, soft-delete.
       const del = await supabase.from('timers').delete().eq('user_id', user.id).eq('id', id);
       if (del.error) {
-        // Fallback to soft delete
         await supabase.from('timers').update({ deleted:true, updated_at: new Date().toISOString() }).eq('user_id', user.id).eq('id', id);
       }
     }
   }
 
-  // drag & drop reordering (persist sort_index)
+  // drag & drop reordering (persist sort_index via debounced upsert)
   function onDragStart(e, id) { setDragId(id); e.dataTransfer.setData("text/plain", id); e.dataTransfer.effectAllowed = "move"; }
   function onDragOverItem(e, overId) {
     e.preventDefault(); const dragging = dragId; if (!dragging || dragging === overId) return;
@@ -295,7 +274,7 @@ export default function App() {
 
   /* ---------------- UI ---------------- */
   return (
-    <div className="min-h-screen w-full overflow-hidden relative">
+    <div className="min-h-screen w-full overflow-x-hidden relative">
       {/* Background (removed moving shimmer line per your request) */}
       <div className="pointer-events-none fixed inset-0 -z-10">
         <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-950" />
@@ -341,9 +320,6 @@ export default function App() {
           <div className="flex items-center gap-2">
             <button onClick={addTimer} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 text-white font-semibold shadow-lg hover:scale-[1.02] active:scale-[0.98] transition">+ Add Timer</button>
             <button onClick={resetAll} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 border border-white/10 hover:bg-white/15">Reset Day</button>
-            {user && (
-              <button onClick={reconcileCloud} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 border border-white/10 hover:bg-white/15 active:scale-95">Save Layout</button>
-            )}
             <button onClick={()=>exportCSV(timers)} className="px-3 py-2 rounded-xl bg-white/10 text-white/90 border border-white/10 hover:bg-white/15">Export CSV</button>
             <div className="text-slate-300 text-sm hidden md:block">
               Total tracked: <span className="time-mono text-white font-semibold">{fmtHMS(totalTracked)}</span>
@@ -486,8 +462,8 @@ function Modal({ children, onClose }) {
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-xl rounded-3xl border border-white/10 bg-slate-900/85 p-6 text-white shadow-2xl">
-        <button onClick={onClose} className="absolute right-3 top-3 rounded-full bg-white/10 hover:bg-white/20 w-8 h-8 grid place-items-center" aria-label="Close">✕</button>
+      <div className="relative z-10 w-full max-w-[min(720px,95vw)] max-h-[90vh] overflow-y-auto rounded-3xl border border-white/10 bg-slate-900/85 p-6 text-white shadow-2xl">
+        <button onClick={onClose} className="sticky float-right right-0 top-0 rounded-full bg-white/10 hover:bg-white/20 w-8 h-8 grid place-items-center" aria-label="Close">✕</button>
         {children}
       </div>
     </div>
@@ -531,11 +507,9 @@ function TimerEditor({ timer, onSave, onDelete }) {
   const [form, setForm] = useState({ ...timer });
   const [targetH, setTargetH] = useState(Math.floor((form.targetSec || 0) / 3600));
   const [targetM, setTargetM] = useState(Math.floor(((form.targetSec || 0) % 3600) / 60));
-  const [adjH, setAdjH] = useState(0); const [adjM, setAdjM] = useState(0);
 
   function patch(name, value) { setForm(f => ({ ...f, [name]: value })); }
   function save() { const tSec = clamp(Number(targetH)*3600 + Number(targetM)*60, 0, 999*3600); onSave({ ...form, targetSec: tSec }); }
-  function applyAdjust(sign){ const s = Math.max(0,(parseInt(adjH)||0)*3600 + (parseInt(adjM)||0)*60); if(s>0){ onSave({ _delta: sign>0 ? s : -s }); setAdjH(0); setAdjM(0); } }
 
   return (
     <div className="space-y-5">
@@ -567,23 +541,9 @@ function TimerEditor({ timer, onSave, onDelete }) {
         </Field>
       </div>
 
-      {/* Adjust inside editor */}
-      <div className="flex items-center gap-2 text-sm">
-        <span className="text-white/70">Adjust now:</span>
-        <input type="number" min="0" value={adjH} onChange={(e)=>setAdjH(e.target.value)} className="w-20 rounded-xl bg-white/10 border border-white/15 px-2 py-1" />
-        <span>:</span>
-        <input type="number" min="0" max="59" value={adjM} onChange={(e)=>setAdjM(clamp(Number(e.target.value),0,59))} className="w-20 rounded-xl bg-white/10 border border-white/15 px-2 py-1" />
-        <button onClick={()=>applyAdjust(+1)} className="px-2 py-1 rounded-lg bg-gradient-to-tr from-lime-500 to-green-600 active:scale-95">Add</button>
-        <button onClick={()=>applyAdjust(-1)} className="px-2 py-1 rounded-lg bg-gradient-to-tr from-rose-500 to-red-600 active:scale-95">Subtract</button>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-2">
-          <button onClick={save} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 font-semibold active:scale-95">Save & Close</button>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={onDelete} className="px-3 py-2 rounded-xl bg-white/10 border border-rose-400/30 text-rose-200">Delete</button>
-        </div>
+      <div className="flex justify-between gap-2">
+        <button onClick={save} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-500 font-semibold active:scale-95">Save & Close</button>
+        <button onClick={onDelete} className="px-3 py-2 rounded-xl bg-white/10 border border-rose-400/30 text-rose-200">Delete</button>
       </div>
     </div>
   );
