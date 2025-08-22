@@ -86,7 +86,7 @@ export default function App() {
       const { data: rows, error } = await supabase
         .from("timers").select("*")
         .eq("user_id", user.id)
-        .or("deleted.is.null,deleted.eq.false")
+        .eq("deleted", false)
         .order("sort_index", { ascending: true });
 
       if (!error) {
@@ -158,7 +158,7 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Check for goal crossing once per tick
+  // Check goal crossing once per tick
   useEffect(() => {
     setTimers(prev => prev.map(t => {
       if (!t.goalOn || t.goalFired || !t.targetSec) return t;
@@ -195,12 +195,24 @@ export default function App() {
 
   // ---------- Actions ----------
   function startTimer(id) {
-    setTimers(prev => prev.map(t => t.id===id ? (t.running? t : { ...t, running:true, startTs: Math.floor(Date.now()/1000) }) : t));
+    const now = Math.floor(Date.now()/1000);
+    setTimers(prev => prev.map(t => {
+      if (t.id === id) {
+        if (t.running) return t; // already running
+        return { ...t, running:true, startTs: now };
+      }
+      if (t.running) {
+        // stop any other running timer and materialize elapsed
+        const extra = now - (t.startTs || now);
+        return { ...t, running:false, startTs:null, elapsedSec: t.elapsedSec + extra };
+      }
+      return t;
+    }));
   }
   function pauseTimer(id) {
+    const now = Math.floor(Date.now()/1000);
     setTimers(prev => prev.map(t => {
       if (t.id !== id || !t.running) return t;
-      const now = Math.floor(Date.now()/1000);
       const extra = now - (t.startTs||now);
       return { ...t, running:false, startTs:null, elapsedSec: t.elapsedSec + extra };
     }));
@@ -213,10 +225,10 @@ export default function App() {
     setTimers(prev => prev.filter(t => t.id !== id));
     setEditTimer(null);
     if (supabase && user) {
-      // Try hard delete first
+      // Try hard delete first (may fail with RLS)
       const del = await supabase.from('timers').delete().eq('user_id', user.id).eq('id', id);
       if (del.error) {
-        // Fallback to soft delete (works with UPDATE policy)
+        // Fallback to soft delete
         await supabase.from('timers').update({ deleted:true, updated_at: new Date().toISOString() }).eq('user_id', user.id).eq('id', id);
       }
     }
@@ -227,7 +239,17 @@ export default function App() {
     setEditTimer(n);
   }
   function adjustTimer(id, deltaSec) {
-    setTimers(prev => prev.map(t => t.id===id ? { ...t, revisionSec: Math.max(0, (t.revisionSec||0) - deltaSec) } : t));
+    // Adjust the actual elapsed seconds (positive adds time, negative subtracts)
+    const now = Math.floor(Date.now()/1000);
+    setTimers(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      let elapsed = t.elapsedSec;
+      if (t.running && t.startTs!=null) { // materialize current run, keep running from now
+        elapsed += now - t.startTs;
+        return { ...t, elapsedSec: Math.max(0, elapsed + deltaSec), startTs: now };
+      }
+      return { ...t, elapsedSec: Math.max(0, elapsed + deltaSec) };
+    }));
   }
   function setTheme(id, cls) { setTimers(prev => prev.map(t => t.id===id?{...t, color:cls}:t)); }
   function setTarget(id, sec) { setTimers(prev => prev.map(t => t.id===id?{...t, targetSec:sec}:t)); }
@@ -240,7 +262,8 @@ export default function App() {
   }
   function exportCSV() {
     const rows = [["Name","Seconds","Time"], ...timers.map(t => { const runExtra = (t.running && t.startTs!=null) ? (nowSec - t.startTs) : 0; const net = Math.max(0, (t.elapsedSec + runExtra) - (t.revisionSec||0)); return [t.name, String(net), fmtHMS(net)]; })];
-    const csv = rows.map(r => r.map(x => `"${String(x).replaceAll('"','""')}"`).join(",")).join("\n");
+    const csv = rows.map(r => r.map(x => `"${String(x).replaceAll('"','""')}"`).join(",")).join("
+");
     const blob = new Blob([csv], { type:"text/csv" });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `timers-${new Date().toISOString().slice(0,10)}.csv`; a.click();
   }
@@ -325,7 +348,7 @@ export default function App() {
 
       {profileOpen && (
         <Modal onClose={()=>setProfileOpen(false)}>
-          <ProfileEditor profile={profile} onSave={(p)=>{ setProfile(p); setProfileOpen(false); }} />
+          <ProfileEditor profile={profile} onSave={(p)=>{ setProfile(p); setProfileOpen(false); }} user={user} />
         </Modal>
       )}
 
@@ -346,12 +369,15 @@ function NavBar({ profile, onOpenProfile, addTimer, resetDay, exportCSV, totalTr
         <button onClick={onOpenProfile} className="flex items-center gap-3 group">
           <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/15 grid place-items-center text-xl">{profile.emoji || "🌟"}</div>
           <div className="text-left">
-            <div className="font-semibold text-lg sm:text-xl">{profile.name || "Your Name"}</div>
+            <div className="font-semibold text-xl sm:text-2xl">{profile.name || "Your Name"}</div>
             <div className="text-xs text-white/70">Time Tracker</div>
           </div>
         </button>
 
         <div className="flex items-center gap-2">
+          {user && (
+            <div className="hidden sm:block text-xs text-white/70 mr-2">Signed in: <span className="text-white/90">{user.email}</span></div>
+          )}
           <button onClick={addTimer} className="px-4 py-2 rounded-xl bg-gradient-to-tr from-sky-500 to-blue-600 hover:brightness-110 active:scale-95 shadow">+ Add Timer</button>
           <button onClick={resetDay} className="px-3 py-2 rounded-xl bg-white/10 border border-white/10 hover:bg-white/15">Reset Day</button>
           <button onClick={exportCSV} className="px-3 py-2 rounded-xl bg-white/10 border border-white/10 hover:bg-white/15">Export CSV</button>
@@ -397,7 +423,7 @@ function TimerCard({ t, onDragStart, onDragOverItem, onClick, start, pause, rese
         </div>
       </div>
 
-      {/* Quick adjust (stop clicks so editor doesn't open) */}
+      {/* Quick adjust (stop events so editor doesn't open) */}
       <QuickAdjust onAdd={(s)=>adjust(+s)} onSub={(s)=>adjust(-s)} />
 
       {/* Shine */}
@@ -412,7 +438,11 @@ function QuickAdjust({ onAdd, onSub }) {
   const [h, setH] = useState(0); const [m, setM] = useState(0);
   function fire(delta) { const s = toSeconds(h, m); if (s>0) { delta>0? onAdd(s): onSub(s); setH(0); setM(0); } }
   return (
-    <div className="mt-3 flex items-center gap-2 text-sm text-white/80" onMouseDown={(e)=>e.stopPropagation()} onClick={(e)=>e.stopPropagation()}>
+    <div className="mt-3 flex items-center gap-2 text-sm text-white/80"
+         onMouseDown={(e)=>e.stopPropagation()}
+         onClick={(e)=>e.stopPropagation()}
+         onTouchStart={(e)=>e.stopPropagation()}
+         onPointerDown={(e)=>e.stopPropagation()}>
       <span className="opacity-80">Adjust:</span>
       <input type="number" className="w-16 px-2 py-1 rounded-lg bg-white/10 border border-white/10" value={h} onChange={e=>setH(e.target.value)} min={0} />
       <span>:</span>
@@ -494,7 +524,7 @@ function TimerEditor({ t, onClose, onDelete, onName, onTarget, onGoal, onCategor
   );
 }
 
-function ProfileEditor({ profile, onSave }) {
+function ProfileEditor({ profile, onSave, user }) {
   const [name, setName] = useState(profile.name || "Your Name");
   const [emoji, setEmoji] = useState(profile.emoji || "🌟");
 
@@ -503,6 +533,9 @@ function ProfileEditor({ profile, onSave }) {
   return (
     <div className="w-[min(560px,95vw)]">
       <h2 className="text-2xl font-semibold mb-4">Profile</h2>
+      {user && (
+        <div className="mb-2 text-xs text-white/70">Signed in as <span className="text-white/90">{user.email}</span></div>
+      )}
       <div className="grid gap-4">
         <div>
           <label className="block text-sm mb-1">Name</label>
